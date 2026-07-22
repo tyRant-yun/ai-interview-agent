@@ -79,13 +79,47 @@ class NoteManager:
         note.mastery_level = mastery_level
         return note
 
+    def update_note(
+        self,
+        note_id: int,
+        *,
+        title: str,
+        category: str,
+        content: str,
+        mastery_level: MasteryLevel,
+    ) -> Note:
+        self.get_note(note_id)
+
+        if self._title_exists(title, exclude_note_id=note_id):
+            raise DuplicateNoteError(
+                f"a note with title {title!r} already exists"
+            )
+
+        updated_note = Note(
+            id=note_id,
+            title=title,
+            category=category,
+            content=content,
+            mastery_level=mastery_level,
+        )
+
+        self._notes[note_id] = updated_note
+        return updated_note
+
     def delete_note(self, note_id: int) -> None:
         self.get_note(note_id)
         del self._notes[note_id]
 
-    def _title_exists(self, title: str) -> bool:
+    def _title_exists(
+        self,
+        title: str,
+        *,
+        exclude_note_id: int | None = None,
+    ) -> bool:
         normalized_title = title.strip().lower()
+
         return any(
-            note.title.lower() == normalized_title
+            note.id != exclude_note_id
+            and note.title.lower() == normalized_title
             for note in self._notes.values()
         )
