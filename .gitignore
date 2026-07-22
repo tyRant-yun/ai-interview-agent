@@ -9,3 +9,6 @@ __pycache__/
 .idea/
 dist/
 build/
+# Obsidian local workspace
+.obsidian/
+**/.obsidian/
