@@ -1,68 +1,19 @@
 import json
 
-from app.llm.models import (
-    LLMResult,
-    LLMStreamChunk,
-    LLMUsage,
-)
 from app.api.dependencies import (
     NoteManagerDependency,
     get_question_generation_service,
 )
-from app.llm.models import (
-    LLMResult,
-    LLMUsage,
+from app.llm.exceptions import (
+    LLMNotConfiguredError,
+    LLMTimeoutError,
+    LLMUpstreamError,
 )
+from app.main import app
 from app.services.question_generation import (
     QuestionGenerationService,
 )
-from app.main import app
-
-
-class FakeLLMClient:
-    def __init__(self, content: str) -> None:
-        self._content = content
-
-    def validate_configuration(self) -> None:
-        pass
-
-    def generate_json(self, *, messages):
-        return LLMResult(
-            content=self._content,
-            model="fake-model",
-            usage=LLMUsage(
-                prompt_tokens=10,
-                completion_tokens=20,
-                total_tokens=30,
-            ),
-            duration_ms=12,
-        )
-
-    async def stream_content(self, *, messages):
-        midpoint = max(
-            1,
-            len(self._content) // 2,
-        )
-
-        yield LLMStreamChunk(
-            delta=self._content[:midpoint],
-            model="fake-model",
-        )
-
-        yield LLMStreamChunk(
-            delta=self._content[midpoint:],
-            model="fake-model",
-        )
-
-        yield LLMStreamChunk(
-            model="fake-model",
-            usage=LLMUsage(
-                prompt_tokens=10,
-                completion_tokens=20,
-                total_tokens=30,
-            ),
-            finish_reason="stop",
-        )
+from tests.fakes import FakeLLMClient
 
 
 def create_note(client) -> int:
@@ -164,6 +115,7 @@ def test_invalid_model_output_returns_bad_gateway(
         "llm_invalid_response"
     )
 
+
 def test_stream_questions_returns_sse(client):
     note_id = create_note(client)
 
@@ -249,3 +201,139 @@ def test_stream_missing_note_returns_404(client):
     )
 
     assert response.status_code == 404
+
+
+def test_generate_timeout_returns_gateway_timeout(
+    client,
+):
+    note_id = create_note(client)
+
+    install_fake_service(
+        FakeLLMClient(
+            "{}",
+            generate_error=LLMTimeoutError(
+                "the model request timed out"
+            ),
+        )
+    )
+
+    response = client.post(
+        "/interview/questions",
+        json={
+            "note_id": note_id,
+            "difficulty": "basic",
+            "question_count": 1,
+        },
+    )
+
+    assert response.status_code == 504
+    assert response.json()["error"] == "llm_timeout"
+
+
+def test_generate_upstream_error_returns_bad_gateway(
+    client,
+):
+    note_id = create_note(client)
+
+    install_fake_service(
+        FakeLLMClient(
+            "{}",
+            generate_error=LLMUpstreamError(
+                "upstream service unavailable"
+            ),
+        )
+    )
+
+    response = client.post(
+        "/interview/questions",
+        json={
+            "note_id": note_id,
+            "difficulty": "basic",
+            "question_count": 1,
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == (
+        "llm_upstream_error"
+    )
+
+
+def test_stream_missing_configuration_returns_503(
+    client,
+):
+    note_id = create_note(client)
+
+    install_fake_service(
+        FakeLLMClient(
+            "{}",
+            config_error=LLMNotConfiguredError(
+                "missing model configuration"
+            ),
+        )
+    )
+
+    response = client.post(
+        "/interview/questions/stream",
+        json={
+            "note_id": note_id,
+            "difficulty": "basic",
+            "question_count": 1,
+        },
+    )
+
+    assert response.status_code == 503
+    assert "application/json" in (
+        response.headers["content-type"]
+    )
+    assert response.json()["error"] == (
+        "llm_not_configured"
+    )
+
+
+def test_stream_timeout_emits_error_event(client):
+    note_id = create_note(client)
+
+    valid_content = json.dumps(
+        {
+            "questions": [
+                {
+                    "question": (
+                        "Why does TCP need a "
+                        "three-way handshake?"
+                    ),
+                    "focus": (
+                        "bidirectional communication"
+                    ),
+                    "difficulty": "basic",
+                }
+            ]
+        }
+    )
+
+    install_fake_service(
+        FakeLLMClient(
+            valid_content,
+            stream_error=LLMTimeoutError(
+                "the streaming request timed out"
+            ),
+        )
+    )
+
+    with client.stream(
+        "POST",
+        "/interview/questions/stream",
+        json={
+            "note_id": note_id,
+            "difficulty": "basic",
+            "question_count": 1,
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "event: started" in body
+    assert "event: delta" in body
+    assert "event: error" in body
+    assert "llm_timeout" in body
+    assert "event: completed" not in body
