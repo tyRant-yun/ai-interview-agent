@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.interview import router as interview_router
 from app.api.notes import router as notes_router
+from app.api.tools import router as tools_router
 from app.db.init_db import create_db_and_tables
 from app.domain.exceptions import (
     DuplicateNoteError,
@@ -16,6 +17,7 @@ from app.llm.exceptions import (
     LLMTimeoutError,
     LLMUpstreamError,
 )
+from app.tools.exceptions import ToolProtocolError
 
 
 @asynccontextmanager
@@ -128,5 +130,20 @@ async def handle_invalid_llm_response(
     )
 
 
+@app.exception_handler(ToolProtocolError)
+async def handle_tool_protocol_error(
+    request: Request,
+    error: ToolProtocolError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        content={
+            "error": "invalid_tool_call",
+            "detail": str(error),
+        },
+    )
+
+
 app.include_router(notes_router)
 app.include_router(interview_router)
+app.include_router(tools_router)
