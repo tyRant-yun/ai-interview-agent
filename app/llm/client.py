@@ -15,8 +15,11 @@ from app.llm.exceptions import (
 from app.llm.models import (
     LLMMessage,
     LLMResult,
-    LLMUsage,
     LLMStreamChunk,
+    LLMToolCall,
+    LLMToolDecision,
+    LLMToolDefinition,
+    LLMUsage,
 )
 
 
@@ -41,6 +44,15 @@ class LLMClient(Protocol):
         messages: list[LLMMessage],
     ) -> AsyncIterator[LLMStreamChunk]:
         """Stream normalized content chunks."""
+        ...
+
+    def choose_tools(
+        self,
+        *,
+        messages: list[LLMMessage],
+        tools: list[LLMToolDefinition],
+    ) -> LLMToolDecision:
+        """Allow the model to select zero or more tools."""
         ...
 
 
@@ -176,6 +188,179 @@ class OpenAICompatibleLLMClient:
         return LLMResult(
             content=content,
             model=returned_model,
+            usage=usage,
+            duration_ms=duration_ms,
+        )
+
+    def choose_tools(
+        self,
+        *,
+        messages: list[LLMMessage],
+        tools: list[LLMToolDefinition],
+    ) -> LLMToolDecision:
+        """Ask the model to select a tool without executing it."""
+
+        self.validate_configuration()
+
+        assert self._base_url is not None
+        assert self._api_key is not None
+        assert self._model is not None
+
+        endpoint = f"{self._base_url}/chat/completions"
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                }
+                for message in messages
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }
+                for tool in tools
+            ],
+            "tool_choice": "auto",
+            "temperature": 0.0,
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        started_at = perf_counter()
+
+        try:
+            with httpx.Client(
+                timeout=self._timeout_seconds
+            ) as client:
+                response = client.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                )
+
+                response.raise_for_status()
+
+        except httpx.TimeoutException as error:
+            raise LLMTimeoutError(
+                "the tool-selection request timed out"
+            ) from error
+
+        except httpx.HTTPStatusError as error:
+            body = error.response.text[:500]
+
+            raise LLMUpstreamError(
+                "the model service returned "
+                f"HTTP {error.response.status_code}: {body}"
+            ) from error
+
+        except httpx.HTTPError as error:
+            raise LLMUpstreamError(
+                "failed to reach the model service: "
+                f"{error}"
+            ) from error
+
+        duration_ms = int(
+            (perf_counter() - started_at) * 1000
+        )
+
+        try:
+            data = response.json()
+            message = data["choices"][0]["message"]
+
+            raw_content = message.get("content")
+
+            if raw_content is not None:
+                if not isinstance(raw_content, str):
+                    raise TypeError(
+                        "assistant content is not a string"
+                    )
+
+                content = raw_content.strip() or None
+            else:
+                content = None
+
+            raw_tool_calls = message.get(
+                "tool_calls"
+            ) or []
+
+            if not isinstance(raw_tool_calls, list):
+                raise TypeError(
+                    "tool_calls is not a list"
+                )
+
+            tool_calls: list[LLMToolCall] = []
+
+            for raw_call in raw_tool_calls:
+                function_data = raw_call["function"]
+
+                call_id = str(raw_call["id"])
+                tool_name = str(function_data["name"])
+                arguments_json = function_data["arguments"]
+
+                if not isinstance(arguments_json, str):
+                    raise TypeError(
+                        "tool arguments are not a string"
+                    )
+
+                tool_calls.append(
+                    LLMToolCall(
+                        id=call_id,
+                        name=tool_name,
+                        arguments_json=arguments_json,
+                    )
+                )
+
+            if content is None and not tool_calls:
+                raise ValueError(
+                    "assistant returned neither content "
+                    "nor tool calls"
+                )
+
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise LLMInvalidResponseError(
+                "the model returned an invalid "
+                "tool-selection response"
+            ) from error
+
+        usage_data = data.get("usage") or {}
+
+        usage = LLMUsage(
+            prompt_tokens=int(
+                usage_data.get("prompt_tokens", 0)
+            ),
+            completion_tokens=int(
+                usage_data.get(
+                    "completion_tokens",
+                    0,
+                )
+            ),
+            total_tokens=int(
+                usage_data.get("total_tokens", 0)
+            ),
+        )
+
+        return LLMToolDecision(
+            content=content,
+            tool_calls=tuple(tool_calls),
+            model=str(
+                data.get("model") or self._model
+            ),
             usage=usage,
             duration_ms=duration_ms,
         )

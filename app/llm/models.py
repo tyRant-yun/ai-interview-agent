@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,3 +37,32 @@ class LLMStreamChunk:
     model: str | None = None
     usage: LLMUsage | None = None
     finish_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LLMToolDefinition:
+    """One function tool exposed to a model."""
+
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class LLMToolCall:
+    """One normalized tool call selected by a model."""
+
+    id: str
+    name: str
+    arguments_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class LLMToolDecision:
+    """Normalized assistant decision with optional tool calls."""
+
+    content: str | None
+    tool_calls: tuple[LLMToolCall, ...]
+    model: str
+    usage: LLMUsage
+    duration_ms: int

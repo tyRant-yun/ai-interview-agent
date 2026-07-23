@@ -13,6 +13,13 @@ from app.repositories.sqlalchemy_note_repository import (
 from app.services.question_generation import (
     QuestionGenerationService,
 )
+from app.services.tool_calling import (
+    ToolCallingService,
+)
+from app.tools.note_tools import (
+    build_note_tools,
+)
+from app.tools.registry import ToolRegistry
 
 
 def get_note_manager(
@@ -61,4 +68,33 @@ def get_question_generation_service(
 QuestionGenerationServiceDependency = Annotated[
     QuestionGenerationService,
     Depends(get_question_generation_service),
+]
+
+def get_tool_registry(
+    manager: NoteManagerDependency,
+) -> ToolRegistry:
+    return ToolRegistry(
+        build_note_tools(manager)
+    )
+
+
+ToolRegistryDependency = Annotated[
+    ToolRegistry,
+    Depends(get_tool_registry),
+]
+
+
+def get_tool_calling_service(
+    llm_client: LLMClientDependency,
+    registry: ToolRegistryDependency,
+) -> ToolCallingService:
+    return ToolCallingService(
+        llm_client=llm_client,
+        registry=registry,
+    )
+
+
+ToolCallingServiceDependency = Annotated[
+    ToolCallingService,
+    Depends(get_tool_calling_service),
 ]

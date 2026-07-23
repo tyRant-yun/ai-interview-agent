@@ -5,6 +5,8 @@ from app.llm.models import (
     LLMMessage,
     LLMResult,
     LLMStreamChunk,
+    LLMToolDecision,
+    LLMToolDefinition,
     LLMUsage,
 )
 
@@ -19,11 +21,13 @@ class FakeLLMClient:
         config_error: LLMError | None = None,
         generate_error: LLMError | None = None,
         stream_error: LLMError | None = None,
+        tool_decision: LLMToolDecision | None = None,
     ) -> None:
         self._content = content
         self._config_error = config_error
         self._generate_error = generate_error
         self._stream_error = stream_error
+        self._tool_decision = tool_decision
 
     def validate_configuration(self) -> None:
         if self._config_error is not None:
@@ -86,3 +90,20 @@ class FakeLLMClient:
             ),
             finish_reason="stop",
         )
+
+    def choose_tools(
+        self,
+        *,
+        messages: list[LLMMessage],
+        tools: list[LLMToolDefinition],
+    ) -> LLMToolDecision:
+        if self._config_error is not None:
+            raise self._config_error
+
+        if self._tool_decision is None:
+            raise AssertionError(
+                "tool_decision must be configured "
+                "before choose_tools is called"
+            )
+
+        return self._tool_decision
