@@ -25,3 +25,17 @@ Day 1：项目立项与范围冻结。
 3. 修改后检查 Git diff。
 4. 核心功能必须有测试。
 5. 不写入无法解释的简历内容。
+
+## 当前阶段
+
+Day 5：结构化面试问题生成。
+
+已完成：
+
+- FastAPI REST API
+- Pydantic 输入输出校验
+- SQLite 持久化
+- SQLAlchemy Repository
+- 每请求独立数据库 Session
+- 兼容 OpenAI 协议的 LLM Client
+- 结构化面试问题生成
