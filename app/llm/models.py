@@ -27,3 +27,13 @@ class LLMResult:
     model: str
     usage: LLMUsage
     duration_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class LLMStreamChunk:
+    """One normalized chunk from a streaming model response."""
+
+    delta: str = ""
+    model: str | None = None
+    usage: LLMUsage | None = None
+    finish_reason: str | None = None

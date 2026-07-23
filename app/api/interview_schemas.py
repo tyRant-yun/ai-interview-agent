@@ -44,3 +44,35 @@ class QuestionGenerationResponse(BaseModel):
     model: str
     usage: LLMUsageResponse
     duration_ms: int
+
+
+class QuestionStreamStartedResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    note_id: int
+    topic: str
+    difficulty: InterviewDifficulty
+    question_count: int
+
+
+class QuestionStreamDeltaResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    text: str
+
+
+class QuestionStreamCompletedResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    note_id: int
+    topic: str
+    questions: list[GeneratedQuestionResponse]
+    model: str
+    usage: LLMUsageResponse | None
+    first_token_ms: int | None
+    duration_ms: int
+
+
+class QuestionStreamErrorResponse(BaseModel):
+    error: str
+    detail: str
