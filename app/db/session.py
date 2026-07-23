@@ -4,11 +4,11 @@ from collections.abc import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.settings import get_settings
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./app.db",
-)
+
+settings = get_settings()
+DATABASE_URL = settings.database_url
 
 connect_args: dict[str, object] = {}
 
