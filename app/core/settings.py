@@ -25,6 +25,8 @@ class Settings(BaseSettings):
         le=300,
     )
 
+    llm_stream_include_usage: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

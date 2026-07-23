@@ -28,9 +28,10 @@ app = FastAPI(
     title="AI Interview Learning Agent",
     description=(
         "Backend API for managing interview-preparation "
-        "notes and AI-generated interview questions."
+        "notes and generating structured streaming "
+        "interview questions."
     ),
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 

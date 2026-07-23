@@ -36,6 +36,9 @@ def get_llm_client(
         api_key=settings.llm_api_key,
         model=settings.llm_model,
         timeout_seconds=settings.llm_timeout_seconds,
+        stream_include_usage=(
+            settings.llm_stream_include_usage
+        ),
     )
 
 

@@ -25,3 +25,33 @@ class QuestionGenerationResult:
     model: str
     usage: LLMUsage
     duration_ms: int
+
+@dataclass(frozen=True, slots=True)
+class QuestionStreamStarted:
+    note_id: int
+    topic: str
+    difficulty: InterviewDifficulty
+    question_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionStreamDelta:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionStreamCompleted:
+    note_id: int
+    topic: str
+    questions: tuple[GeneratedQuestion, ...]
+    model: str
+    usage: LLMUsage | None
+    first_token_ms: int | None
+    duration_ms: int
+
+
+QuestionStreamUpdate = (
+    QuestionStreamStarted
+    | QuestionStreamDelta
+    | QuestionStreamCompleted
+)
