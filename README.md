@@ -27,8 +27,7 @@ Day 1：项目立项与范围冻结。
 5. 不写入无法解释的简历内容。
 
 ## 当前阶段
-
-Day 5：结构化面试问题生成。
+Day 8：Native Tool Calling 与 Tool Registry。
 
 已完成：
 
@@ -36,9 +35,8 @@ Day 5：结构化面试问题生成。
 - Pydantic 输入输出校验
 - SQLite 持久化
 - SQLAlchemy Repository
-- 每请求独立数据库 Session
 - 兼容 OpenAI 协议的 LLM Client
 - 结构化面试问题生成
-- SSE 流式面试问题生成
+- SSE 流式输出
 - 首 Token 延迟与总耗时记录
-- 流开始后的结构化错误事件
+- API、Service、数据库和 SSE 自动化测试
