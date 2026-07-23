@@ -1,20 +1,30 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app.api.notes import router as notes_router
+from app.db.init_db import create_db_and_tables
 from app.domain.exceptions import (
     DuplicateNoteError,
     NoteNotFoundError,
 )
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_db_and_tables()
+    yield
+
+
 app = FastAPI(
     title="AI Interview Learning Agent",
     description=(
-        "Backend API for managing interview-preparation notes "
-        "and future AI learning workflows."
+        "Backend API for managing interview-preparation "
+        "notes and future AI learning workflows."
     ),
-    version="0.1.0",
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
 

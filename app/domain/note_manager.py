@@ -1,16 +1,19 @@
-from app.domain.exceptions import DuplicateNoteError, NoteNotFoundError
+from app.domain.exceptions import (
+    DuplicateNoteError,
+    NoteNotFoundError,
+)
 from app.domain.models import MasteryLevel, Note
+from app.domain.repositories import NoteRepository
 
 
 class NoteManager:
-    """In-memory note management service.
+    """Business rules for managing knowledge notes."""
 
-    The dictionary is temporary. It will be replaced by SQLite later.
-    """
-
-    def __init__(self) -> None:
-        self._notes: dict[int, Note] = {}
-        self._next_id = 1
+    def __init__(
+        self,
+        repository: NoteRepository,
+    ) -> None:
+        self._repository = repository
 
     def create_note(
         self,
@@ -20,22 +23,17 @@ class NoteManager:
         content: str,
         mastery_level: MasteryLevel = MasteryLevel.NEW,
     ) -> Note:
-        if self._title_exists(title):
+        if self._repository.title_exists(title):
             raise DuplicateNoteError(
                 f"a note with title {title!r} already exists"
             )
 
-        note = Note(
-            id=self._next_id,
+        return self._repository.create(
             title=title,
             category=category,
             content=content,
             mastery_level=mastery_level,
         )
-
-        self._notes[note.id] = note
-        self._next_id += 1
-        return note
 
     def list_notes(
         self,
@@ -43,40 +41,19 @@ class NoteManager:
         category: str | None = None,
         mastery_level: MasteryLevel | None = None,
     ) -> list[Note]:
-        notes = list(self._notes.values())
-
-        if category is not None:
-            normalized_category = category.strip().lower()
-            notes = [
-                note
-                for note in notes
-                if note.category.lower() == normalized_category
-            ]
-
-        if mastery_level is not None:
-            notes = [
-                note
-                for note in notes
-                if note.mastery_level == mastery_level
-            ]
-
-        return notes
+        return self._repository.list(
+            category=category,
+            mastery_level=mastery_level,
+        )
 
     def get_note(self, note_id: int) -> Note:
-        try:
-            return self._notes[note_id]
-        except KeyError as error:
+        note = self._repository.get(note_id)
+
+        if note is None:
             raise NoteNotFoundError(
                 f"note with id {note_id} was not found"
-            ) from error
+            )
 
-    def update_mastery(
-        self,
-        note_id: int,
-        mastery_level: MasteryLevel,
-    ) -> Note:
-        note = self.get_note(note_id)
-        note.mastery_level = mastery_level
         return note
 
     def update_note(
@@ -90,36 +67,55 @@ class NoteManager:
     ) -> Note:
         self.get_note(note_id)
 
-        if self._title_exists(title, exclude_note_id=note_id):
+        if self._repository.title_exists(
+            title,
+            exclude_note_id=note_id,
+        ):
             raise DuplicateNoteError(
                 f"a note with title {title!r} already exists"
             )
 
-        updated_note = Note(
-            id=note_id,
+        note = self._repository.update(
+            note_id,
             title=title,
             category=category,
             content=content,
             mastery_level=mastery_level,
         )
 
-        self._notes[note_id] = updated_note
-        return updated_note
+        if note is None:
+            raise NoteNotFoundError(
+                f"note with id {note_id} was not found"
+            )
+
+        return note
+
+    def update_mastery(
+        self,
+        note_id: int,
+        mastery_level: MasteryLevel,
+    ) -> Note:
+        existing_note = self.get_note(note_id)
+
+        note = self._repository.update(
+            note_id,
+            title=existing_note.title,
+            category=existing_note.category,
+            content=existing_note.content,
+            mastery_level=mastery_level,
+        )
+
+        if note is None:
+            raise NoteNotFoundError(
+                f"note with id {note_id} was not found"
+            )
+
+        return note
 
     def delete_note(self, note_id: int) -> None:
-        self.get_note(note_id)
-        del self._notes[note_id]
+        deleted = self._repository.delete(note_id)
 
-    def _title_exists(
-        self,
-        title: str,
-        *,
-        exclude_note_id: int | None = None,
-    ) -> bool:
-        normalized_title = title.strip().lower()
-
-        return any(
-            note.id != exclude_note_id
-            and note.title.lower() == normalized_title
-            for note in self._notes.values()
-        )
+        if not deleted:
+            raise NoteNotFoundError(
+                f"note with id {note_id} was not found"
+            )
