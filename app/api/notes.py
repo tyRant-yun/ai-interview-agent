@@ -1,8 +1,12 @@
 from fastapi import APIRouter, Query, Response, status
 
-from app.api.schemas import NoteCreate, NoteReplace, NoteResponse
+from app.api.dependencies import NoteManagerDependency
+from app.api.schemas import (
+    NoteCreate,
+    NoteReplace,
+    NoteResponse,
+)
 from app.domain.models import MasteryLevel
-from app.domain.note_manager import NoteManager
 
 
 router = APIRouter(
@@ -10,18 +14,20 @@ router = APIRouter(
     tags=["notes"],
 )
 
-# Temporary in-memory storage.
-# Day 4 will replace this with SQLite.
-note_manager = NoteManager()
-
 
 @router.post(
     "",
     response_model=NoteResponse,
     status_code=status.HTTP_201_CREATED,
 )
-def create_note(payload: NoteCreate) -> NoteResponse:
-    note = note_manager.create_note(**payload.model_dump())
+def create_note(
+    payload: NoteCreate,
+    manager: NoteManagerDependency,
+) -> NoteResponse:
+    note = manager.create_note(
+        **payload.model_dump()
+    )
+
     return NoteResponse.model_validate(note)
 
 
@@ -30,6 +36,7 @@ def create_note(payload: NoteCreate) -> NoteResponse:
     response_model=list[NoteResponse],
 )
 def list_notes(
+    manager: NoteManagerDependency,
     category: str | None = Query(
         default=None,
         min_length=1,
@@ -37,7 +44,7 @@ def list_notes(
     ),
     mastery_level: MasteryLevel | None = None,
 ) -> list[NoteResponse]:
-    notes = note_manager.list_notes(
+    notes = manager.list_notes(
         category=category,
         mastery_level=mastery_level,
     )
@@ -52,8 +59,11 @@ def list_notes(
     "/{note_id}",
     response_model=NoteResponse,
 )
-def get_note(note_id: int) -> NoteResponse:
-    note = note_manager.get_note(note_id)
+def get_note(
+    note_id: int,
+    manager: NoteManagerDependency,
+) -> NoteResponse:
+    note = manager.get_note(note_id)
     return NoteResponse.model_validate(note)
 
 
@@ -64,11 +74,13 @@ def get_note(note_id: int) -> NoteResponse:
 def replace_note(
     note_id: int,
     payload: NoteReplace,
+    manager: NoteManagerDependency,
 ) -> NoteResponse:
-    note = note_manager.update_note(
+    note = manager.update_note(
         note_id,
         **payload.model_dump(),
     )
+
     return NoteResponse.model_validate(note)
 
 
@@ -76,6 +88,12 @@ def replace_note(
     "/{note_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
-def delete_note(note_id: int) -> Response:
-    note_manager.delete_note(note_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+def delete_note(
+    note_id: int,
+    manager: NoteManagerDependency,
+) -> Response:
+    manager.delete_note(note_id)
+
+    return Response(
+        status_code=status.HTTP_204_NO_CONTENT
+    )
