@@ -20,7 +20,9 @@ from app.tools.note_tools import (
     build_note_tools,
 )
 from app.tools.registry import ToolRegistry
-
+from app.services.agent_runner import (
+    AgentRunner,
+)
 
 def get_note_manager(
     session: Session = Depends(get_session),
@@ -97,4 +99,19 @@ def get_tool_calling_service(
 ToolCallingServiceDependency = Annotated[
     ToolCallingService,
     Depends(get_tool_calling_service),
+]
+
+def get_agent_runner(
+    llm_client: LLMClientDependency,
+    registry: ToolRegistryDependency,
+) -> AgentRunner:
+    return AgentRunner(
+        llm_client=llm_client,
+        registry=registry,
+    )
+
+
+AgentRunnerDependency = Annotated[
+    AgentRunner,
+    Depends(get_agent_runner),
 ]

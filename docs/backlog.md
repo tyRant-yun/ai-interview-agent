@@ -9,9 +9,9 @@
 - [x] 结构化问题生成
 - [ ] 回答评价
 - [x] SSE 流式输出
-- [ ] Tool Schema 与三个工具
-- [ ] 简化 ReAct Runner
-- [ ] 最大调用轮数
+- [x] Tool Schema 与三个工具
+- [x] 简化 ReAct Runner
+- [x] 最大调用轮数
 - [ ] 最近消息窗口
 - [ ] 历史摘要压缩
 - [ ] Markdown 最小 RAG

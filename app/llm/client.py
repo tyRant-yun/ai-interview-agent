@@ -1,7 +1,7 @@
 import json
 from collections.abc import AsyncIterator
 from time import perf_counter
-from typing import Protocol
+from typing import Literal, Protocol
 
 import httpx
 
@@ -21,6 +21,39 @@ from app.llm.models import (
     LLMToolDefinition,
     LLMUsage,
 )
+
+
+def _serialize_message(
+    message: LLMMessage,
+) -> dict[str, object]:
+    """Convert one internal message to provider format."""
+
+    payload: dict[str, object] = {
+        "role": message.role,
+        "content": message.content,
+    }
+
+    if message.tool_calls:
+        payload["tool_calls"] = [
+            {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.name,
+                    "arguments": (
+                        tool_call.arguments_json
+                    ),
+                },
+            }
+            for tool_call in message.tool_calls
+        ]
+
+    if message.tool_call_id is not None:
+        payload["tool_call_id"] = (
+            message.tool_call_id
+        )
+
+    return payload
 
 
 class LLMClient(Protocol):
@@ -51,13 +84,14 @@ class LLMClient(Protocol):
         *,
         messages: list[LLMMessage],
         tools: list[LLMToolDefinition],
+        tool_choice: Literal["auto", "none"] = "auto",
     ) -> LLMToolDecision:
         """Allow the model to select zero or more tools."""
         ...
 
 
 class OpenAICompatibleLLMClient:
-    """Synchronous client for an OpenAI-compatible chat endpoint."""
+    """Client for an OpenAI-compatible chat endpoint."""
 
     def __init__(
         self,
@@ -86,10 +120,7 @@ class OpenAICompatibleLLMClient:
         payload = {
             "model": self._model,
             "messages": [
-                {
-                    "role": message.role,
-                    "content": message.content,
-                }
+                _serialize_message(message)
                 for message in messages
             ],
             "temperature": 0.2,
@@ -197,6 +228,7 @@ class OpenAICompatibleLLMClient:
         *,
         messages: list[LLMMessage],
         tools: list[LLMToolDefinition],
+        tool_choice: Literal["auto", "none"] = "auto",
     ) -> LLMToolDecision:
         """Ask the model to select a tool without executing it."""
 
@@ -211,10 +243,7 @@ class OpenAICompatibleLLMClient:
         payload = {
             "model": self._model,
             "messages": [
-                {
-                    "role": message.role,
-                    "content": message.content,
-                }
+                _serialize_message(message)
                 for message in messages
             ],
             "tools": [
@@ -228,7 +257,7 @@ class OpenAICompatibleLLMClient:
                 }
                 for tool in tools
             ],
-            "tool_choice": "auto",
+            "tool_choice": tool_choice,
             "temperature": 0.0,
         }
 
@@ -383,10 +412,7 @@ class OpenAICompatibleLLMClient:
         payload: dict[str, object] = {
             "model": self._model,
             "messages": [
-                {
-                    "role": message.role,
-                    "content": message.content,
-                }
+                _serialize_message(message)
                 for message in messages
             ],
             "temperature": 0.2,
