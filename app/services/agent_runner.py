@@ -116,6 +116,10 @@ class AgentRunner:
         *,
         user_request: str,
         max_steps: int,
+        history_messages: list[
+            LLMMessage
+        ] | None = None,
+        memory_summary: str | None = None,
     ) -> AgentRunResult:
         if not 1 <= max_steps <= MAX_AGENT_STEPS:
             raise ValueError(
@@ -126,7 +130,11 @@ class AgentRunner:
         self._llm_client.validate_configuration()
 
         messages = build_agent_messages(
-            user_request=user_request
+            user_request=user_request,
+            history_messages=tuple(
+                history_messages or []
+            ),
+            memory_summary=memory_summary,
         )
 
         definitions = self._registry.definitions()
