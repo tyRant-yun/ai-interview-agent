@@ -7,9 +7,17 @@ from app.api.dependencies import (
     get_llm_client,
 )
 from app.llm.models import (
+    LLMToolCall,
     LLMToolDecision,
     LLMUsage,
 )
+from app.llm.exceptions import (
+    LLMToolDecisionProtocolError,
+)
+from app.db.models import (
+    ConversationMessageRecord,
+)
+from app.db.session import SessionLocal
 from app.main import app
 from app.services.conversation_memory import (
     ConversationMemoryService,
@@ -617,4 +625,213 @@ def test_summary_failure_does_not_lose_turn(
             "assistant",
             "Second answer.",
         ),
+    ]
+
+
+def test_invalid_protocol_leaves_message_count_unchanged(
+    client,
+):
+    fake_client = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            LLMToolDecisionProtocolError(
+                "invalid envelope"
+            ),
+            LLMToolDecisionProtocolError(
+                "invalid envelope again"
+            ),
+        ],
+    )
+    install_fake_llm(fake_client)
+
+    conversation_id = create_conversation(
+        client,
+        title="Invalid protocol",
+    )
+
+    before = client.get(
+        f"/conversations/{conversation_id}"
+    ).json()
+
+    response = run_conversation_agent(
+        client,
+        conversation_id=conversation_id,
+        user_request="This must not be saved.",
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == (
+        "llm_invalid_response"
+    )
+
+    after = client.get(
+        f"/conversations/{conversation_id}"
+    ).json()
+
+    assert after["messages"] == before["messages"]
+    assert after["summary"] == before["summary"]
+
+
+def test_multiple_tools_leave_message_count_unchanged(
+    client,
+):
+    multiple = LLMToolDecision(
+        content=None,
+        tool_calls=(
+            LLMToolCall(
+                id="call-1",
+                name="get_note",
+                arguments_json='{"note_id":1}',
+            ),
+            LLMToolCall(
+                id="call-2",
+                name="get_note",
+                arguments_json='{"note_id":2}',
+            ),
+        ),
+        model="fake-model",
+        usage=LLMUsage(),
+        duration_ms=1,
+    )
+    fake_client = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            multiple,
+            multiple,
+        ],
+    )
+    install_fake_llm(fake_client)
+
+    conversation_id = create_conversation(
+        client,
+        title="Multiple tools",
+    )
+
+    response = run_conversation_agent(
+        client,
+        conversation_id=conversation_id,
+        user_request="Do not save this turn.",
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == (
+        "invalid_tool_call"
+    )
+
+    conversation = client.get(
+        f"/conversations/{conversation_id}"
+    ).json()
+    assert conversation["messages"] == []
+
+
+def test_enveloped_dsml_answer_is_not_persisted(
+    client,
+):
+    dsml = (
+        "<｜｜DSML｜｜tool_calls>"
+        '<｜｜DSML｜｜invoke name="get_note">'
+    )
+    fake_client = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            build_final_decision(dsml),
+            build_final_decision(dsml),
+        ],
+    )
+    install_fake_llm(fake_client)
+
+    conversation_id = create_conversation(
+        client,
+        title="DSML envelope",
+    )
+
+    response = run_conversation_agent(
+        client,
+        conversation_id=conversation_id,
+        user_request="Do not persist controls.",
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == (
+        "llm_invalid_response"
+    )
+
+    conversation = client.get(
+        f"/conversations/{conversation_id}"
+    ).json()
+    assert conversation["messages"] == []
+
+
+def test_legacy_dsml_turn_is_quarantined_not_deleted(
+    client,
+):
+    fake_client = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            build_final_decision(
+                "A clean current answer."
+            )
+        ],
+    )
+    install_fake_llm(fake_client)
+
+    conversation_id = create_conversation(
+        client,
+        title="Legacy DSML",
+    )
+    legacy_dsml = (
+        "<｜｜DSML｜｜tool_calls>"
+        '<｜｜DSML｜｜invoke name="get_all_categories">'
+    )
+
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                ConversationMessageRecord(
+                    conversation_id=conversation_id,
+                    role="user",
+                    content="Legacy user request.",
+                ),
+                ConversationMessageRecord(
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=legacy_dsml,
+                ),
+            ]
+        )
+        session.commit()
+
+    response = run_conversation_agent(
+        client,
+        conversation_id=conversation_id,
+        user_request="Current request.",
+    )
+
+    assert response.status_code == 200
+
+    model_messages = (
+        fake_client.tool_requests[0][0]
+    )
+    assert all(
+        message.content
+        not in {
+            "Legacy user request.",
+            legacy_dsml,
+        }
+        for message in model_messages
+    )
+
+    conversation = client.get(
+        f"/conversations/{conversation_id}"
+    ).json()
+    persisted_contents = [
+        message["content"]
+        for message in conversation["messages"]
+    ]
+
+    assert persisted_contents == [
+        "Legacy user request.",
+        legacy_dsml,
+        "Current request.",
+        "A clean current answer.",
     ]

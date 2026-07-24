@@ -7,7 +7,10 @@ from pydantic import (
 from app.agent.exceptions import (
     AgentRepeatedToolCallError,
 )
-from app.llm.exceptions import LLMInvalidResponseError
+from app.llm.exceptions import (
+    LLMInvalidResponseError,
+    LLMToolDecisionProtocolError,
+)
 from app.llm.models import (
     LLMToolCall,
     LLMToolDecision,
@@ -18,6 +21,7 @@ from app.tools.registry import (
     RegisteredTool,
     ToolRegistry,
 )
+from app.tools.exceptions import ToolSelectionError
 from tests.fakes import FakeLLMClient
 
 
@@ -507,3 +511,191 @@ def test_agent_logs_safe_step_diagnostics(
     assert "agent_terminated reason=final_answer" in log_text
     assert "private-user-content" not in log_text
     assert '"value":"TCP"' not in log_text
+
+
+def multiple_tool_decision() -> LLMToolDecision:
+    return LLMToolDecision(
+        content=None,
+        tool_calls=(
+            LLMToolCall(
+                id="call-1",
+                name="echo",
+                arguments_json='{"value":"first"}',
+            ),
+            LLMToolCall(
+                id="call-2",
+                name="echo",
+                arguments_json='{"value":"second"}',
+            ),
+        ),
+        model="fake-model",
+        usage=LLMUsage(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+        ),
+        duration_ms=5,
+    )
+
+
+def test_multiple_tools_execute_neither_before_correction():
+    executions = []
+
+    def echo(arguments: BaseModel):
+        executions.append(arguments.value)
+        return {"value": arguments.value}
+
+    registry = ToolRegistry(
+        [
+            RegisteredTool(
+                name="echo",
+                description="Echo one value.",
+                arguments_model=EchoArguments,
+                handler=echo,
+            )
+        ]
+    )
+    fake = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            multiple_tool_decision(),
+            final_decision("Corrected answer."),
+        ],
+    )
+
+    result = AgentRunner(
+        llm_client=fake,
+        registry=registry,
+    ).run(
+        user_request="Use at most one tool.",
+        max_steps=2,
+    )
+
+    assert result.final_answer == "Corrected answer."
+    assert executions == []
+    assert result.usage.total_tokens == 30
+    assert len(result.steps) == 1
+    assert fake.content_contracts == [
+        "final_answer_envelope",
+        "final_answer_envelope",
+    ]
+
+    correction_messages = (
+        fake.tool_requests[1][0]
+    )
+    assert all(
+        "first" not in (message.content or "")
+        and "second" not in (message.content or "")
+        for message in correction_messages
+    )
+
+
+def test_repeated_multiple_tools_are_rejected_without_execution():
+    executions = []
+
+    def echo(arguments: BaseModel):
+        executions.append(arguments.value)
+        return {"value": arguments.value}
+
+    registry = ToolRegistry(
+        [
+            RegisteredTool(
+                name="echo",
+                description="Echo one value.",
+                arguments_model=EchoArguments,
+                handler=echo,
+            )
+        ]
+    )
+    fake = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            multiple_tool_decision(),
+            multiple_tool_decision(),
+        ],
+    )
+
+    with pytest.raises(
+        ToolSelectionError,
+        match="at most one",
+    ):
+        AgentRunner(
+            llm_client=fake,
+            registry=registry,
+        ).run(
+            user_request="Do not execute either.",
+            max_steps=2,
+        )
+
+    assert executions == []
+
+
+def test_adapter_protocol_error_is_corrected_once():
+    fake = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            LLMToolDecisionProtocolError(
+                "invalid final answer envelope"
+            ),
+            final_decision("Recovered answer."),
+        ],
+    )
+
+    result = AgentRunner(
+        llm_client=fake,
+        registry=build_registry(),
+    ).run(
+        user_request="Answer safely.",
+        max_steps=2,
+    )
+
+    assert result.final_answer == "Recovered answer."
+    assert len(fake.tool_requests) == 2
+
+
+def test_parsed_dsml_answer_is_never_returned():
+    executions = []
+
+    def echo(arguments: BaseModel):
+        executions.append(arguments.value)
+        return {"value": arguments.value}
+
+    registry = ToolRegistry(
+        [
+            RegisteredTool(
+                name="echo",
+                description="Echo one value.",
+                arguments_model=EchoArguments,
+                handler=echo,
+            )
+        ]
+    )
+    dsml = (
+        "<｜｜DSML｜｜tool_calls>"
+        '<｜｜DSML｜｜invoke name="echo">'
+    )
+    fake = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            final_decision(dsml),
+            final_decision(dsml),
+        ],
+    )
+
+    with pytest.raises(
+        LLMInvalidResponseError,
+        match="reserved tool control marker",
+    ):
+        AgentRunner(
+            llm_client=fake,
+            registry=registry,
+        ).run(
+            user_request="Do not publish controls.",
+            max_steps=2,
+        )
+
+    assert all(
+        dsml not in (message.content or "")
+        for message in fake.tool_requests[1][0]
+    )
+    assert executions == []

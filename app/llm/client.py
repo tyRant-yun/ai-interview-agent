@@ -4,12 +4,18 @@ from time import perf_counter
 from typing import Literal, Protocol
 
 import httpx
+from pydantic import ValidationError
 
+from app.llm.agent_protocol import (
+    FinalAnswerEnvelope,
+    ToolContentContract,
+)
 from app.llm.exceptions import (
     LLMError,
     LLMInvalidResponseError,
     LLMNotConfiguredError,
     LLMTimeoutError,
+    LLMToolDecisionProtocolError,
     LLMUpstreamError,
 )
 from app.llm.models import (
@@ -56,6 +62,29 @@ def _serialize_message(
     return payload
 
 
+def _parallel_tool_calls_unsupported(
+    response: httpx.Response,
+) -> bool:
+    if response.status_code not in {400, 422}:
+        return False
+
+    body = response.text.lower()
+
+    if "parallel_tool_calls" not in body:
+        return False
+
+    return any(
+        marker in body
+        for marker in (
+            "unknown",
+            "unsupported",
+            "unrecognized",
+            "not allowed",
+            "not permitted",
+        )
+    )
+
+
 class LLMClient(Protocol):
     """Contract required by AI application services."""
 
@@ -85,6 +114,7 @@ class LLMClient(Protocol):
         messages: list[LLMMessage],
         tools: list[LLMToolDefinition],
         tool_choice: Literal["auto", "none"] = "auto",
+        content_contract: ToolContentContract = "plain_text",
     ) -> LLMToolDecision:
         """Allow the model to select zero or more tools."""
         ...
@@ -101,12 +131,14 @@ class OpenAICompatibleLLMClient:
         model: str | None,
         timeout_seconds: float,
         stream_include_usage: bool = False,
+        http_transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/") if base_url else None
         self._api_key = api_key
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._stream_include_usage = stream_include_usage
+        self._http_transport = http_transport
 
     def generate_json(
         self,
@@ -229,6 +261,7 @@ class OpenAICompatibleLLMClient:
         messages: list[LLMMessage],
         tools: list[LLMToolDefinition],
         tool_choice: Literal["auto", "none"] = "auto",
+        content_contract: ToolContentContract = "plain_text",
     ) -> LLMToolDecision:
         """Ask the model to select a tool without executing it."""
 
@@ -258,6 +291,7 @@ class OpenAICompatibleLLMClient:
                 for tool in tools
             ],
             "tool_choice": tool_choice,
+            "parallel_tool_calls": False,
             "temperature": 0.0,
         }
 
@@ -270,13 +304,28 @@ class OpenAICompatibleLLMClient:
 
         try:
             with httpx.Client(
-                timeout=self._timeout_seconds
+                timeout=self._timeout_seconds,
+                transport=self._http_transport,
             ) as client:
                 response = client.post(
                     endpoint,
                     headers=headers,
                     json=payload,
                 )
+
+                if _parallel_tool_calls_unsupported(
+                    response
+                ):
+                    fallback_payload = dict(payload)
+                    fallback_payload.pop(
+                        "parallel_tool_calls"
+                    )
+
+                    response = client.post(
+                        endpoint,
+                        headers=headers,
+                        json=fallback_payload,
+                    )
 
                 response.raise_for_status()
 
@@ -331,11 +380,44 @@ class OpenAICompatibleLLMClient:
             tool_calls: list[LLMToolCall] = []
 
             for raw_call in raw_tool_calls:
+                if not isinstance(raw_call, dict):
+                    raise TypeError(
+                        "tool call is not an object"
+                    )
+
+                if raw_call.get("type") != "function":
+                    raise ValueError(
+                        "tool call type is not function"
+                    )
+
                 function_data = raw_call["function"]
 
-                call_id = str(raw_call["id"])
-                tool_name = str(function_data["name"])
+                if not isinstance(function_data, dict):
+                    raise TypeError(
+                        "tool function is not an object"
+                    )
+
+                call_id = raw_call["id"]
+                tool_name = function_data["name"]
                 arguments_json = function_data["arguments"]
+
+                if (
+                    not isinstance(call_id, str)
+                    or not call_id.strip()
+                ):
+                    raise TypeError(
+                        "tool call id is not "
+                        "a non-empty string"
+                    )
+
+                if (
+                    not isinstance(tool_name, str)
+                    or not tool_name.strip()
+                ):
+                    raise TypeError(
+                        "tool name is not "
+                        "a non-empty string"
+                    )
 
                 if not isinstance(arguments_json, str):
                     raise TypeError(
@@ -345,12 +427,32 @@ class OpenAICompatibleLLMClient:
                 tool_calls.append(
                     LLMToolCall(
                         id=call_id,
-                        name=tool_name,
+                        name=tool_name.strip(),
                         arguments_json=arguments_json,
                     )
                 )
 
-            if content is None and not tool_calls:
+            if tool_calls:
+                if content is not None:
+                    raise ValueError(
+                        "assistant returned content "
+                        "together with tool calls"
+                    )
+            elif content_contract == (
+                "final_answer_envelope"
+            ):
+                if content is None:
+                    raise ValueError(
+                        "assistant returned no final "
+                        "answer envelope"
+                    )
+
+                envelope = (
+                    FinalAnswerEnvelope
+                    .model_validate_json(content)
+                )
+                content = envelope.answer
+            elif content is None:
                 raise ValueError(
                     "assistant returned neither content "
                     "nor tool calls"
@@ -361,8 +463,9 @@ class OpenAICompatibleLLMClient:
             IndexError,
             TypeError,
             ValueError,
+            ValidationError,
         ) as error:
-            raise LLMInvalidResponseError(
+            raise LLMToolDecisionProtocolError(
                 "the model returned an invalid "
                 "tool-selection response"
             ) from error
