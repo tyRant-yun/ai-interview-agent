@@ -3,11 +3,17 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from app.agent.exceptions import AgentExecutionError
+from app.api.agent import router as agent_router
+from app.api.conversations import (
+    router as conversations_router,
+)
 from app.api.interview import router as interview_router
 from app.api.notes import router as notes_router
 from app.api.tools import router as tools_router
 from app.db.init_db import create_db_and_tables
 from app.domain.exceptions import (
+    ConversationNotFoundError,
     DuplicateNoteError,
     NoteNotFoundError,
 )
@@ -18,10 +24,7 @@ from app.llm.exceptions import (
     LLMUpstreamError,
 )
 from app.tools.exceptions import ToolProtocolError
-from app.agent.exceptions import (
-    AgentExecutionError,
-)
-from app.api.agent import router as agent_router
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,10 +39,24 @@ app = FastAPI(
         "notes and generating structured streaming "
         "interview questions."
     ),
-    version="0.6.0",
+    version="0.7.0",
     lifespan=lifespan,
 )
 
+@app.exception_handler(
+    ConversationNotFoundError
+)
+async def handle_conversation_not_found(
+    request: Request,
+    error: ConversationNotFoundError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={
+            "error": "conversation_not_found",
+            "detail": str(error),
+        },
+    )
 
 @app.get(
     "/health",
@@ -163,3 +180,4 @@ app.include_router(notes_router)
 app.include_router(interview_router)
 app.include_router(tools_router)
 app.include_router(agent_router)
+app.include_router(conversations_router)

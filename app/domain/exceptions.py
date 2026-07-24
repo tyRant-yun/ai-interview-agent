@@ -8,3 +8,12 @@ class NoteNotFoundError(NoteError):
 
 class DuplicateNoteError(NoteError):
     """Raised when a note with the same title already exists."""
+
+class ConversationError(Exception):
+    """Base exception for conversation errors."""
+
+
+class ConversationNotFoundError(
+    ConversationError
+):
+    """Raised when a conversation does not exist."""

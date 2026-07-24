@@ -26,6 +26,23 @@ class Settings(BaseSettings):
     )
 
     llm_stream_include_usage: bool = False
+    conversation_recent_message_limit: int = Field(
+        default=8,
+        ge=2,
+        le=50,
+    )
+
+    conversation_summary_trigger_messages: int = Field(
+        default=12,
+        ge=4,
+        le=100,
+    )
+
+    conversation_context_char_budget: int = Field(
+        default=32000,
+        ge=4000,
+        le=200000,
+    )
 
 
 @lru_cache

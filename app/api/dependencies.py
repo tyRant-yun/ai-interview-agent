@@ -23,6 +23,18 @@ from app.tools.registry import ToolRegistry
 from app.services.agent_runner import (
     AgentRunner,
 )
+from app.domain.conversation_manager import (
+    ConversationManager,
+)
+from app.repositories.sqlalchemy_conversation_repository import (
+    SQLAlchemyConversationRepository,
+)
+from app.services.conversation_agent import (
+    ConversationAgentService,
+)
+from app.services.conversation_memory import (
+    ConversationMemoryService,
+)
 
 def get_note_manager(
     session: Session = Depends(get_session),
@@ -36,6 +48,24 @@ NoteManagerDependency = Annotated[
     Depends(get_note_manager),
 ]
 
+def get_conversation_manager(
+    session: Session = Depends(get_session),
+) -> ConversationManager:
+    repository = (
+        SQLAlchemyConversationRepository(
+            session
+        )
+    )
+
+    return ConversationManager(
+        repository
+    )
+
+
+ConversationManagerDependency = Annotated[
+    ConversationManager,
+    Depends(get_conversation_manager),
+]
 
 def get_llm_client(
     settings: Settings = Depends(get_settings),
@@ -114,4 +144,54 @@ def get_agent_runner(
 AgentRunnerDependency = Annotated[
     AgentRunner,
     Depends(get_agent_runner),
+]
+
+def get_conversation_memory_service(
+    manager: ConversationManagerDependency,
+    llm_client: LLMClientDependency,
+    settings: Settings = Depends(
+        get_settings
+    ),
+) -> ConversationMemoryService:
+    return ConversationMemoryService(
+        manager=manager,
+        llm_client=llm_client,
+        recent_message_limit=(
+            settings
+            .conversation_recent_message_limit
+        ),
+        summary_trigger_messages=(
+            settings
+            .conversation_summary_trigger_messages
+        ),
+        context_char_budget=(
+            settings
+            .conversation_context_char_budget
+        ),
+    )
+
+
+ConversationMemoryServiceDependency = Annotated[
+    ConversationMemoryService,
+    Depends(
+        get_conversation_memory_service
+    ),
+]
+
+
+def get_conversation_agent_service(
+    runner: AgentRunnerDependency,
+    memory: ConversationMemoryServiceDependency,
+) -> ConversationAgentService:
+    return ConversationAgentService(
+        runner=runner,
+        memory=memory,
+    )
+
+
+ConversationAgentServiceDependency = Annotated[
+    ConversationAgentService,
+    Depends(
+        get_conversation_agent_service
+    ),
 ]
