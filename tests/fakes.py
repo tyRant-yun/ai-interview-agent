@@ -2,6 +2,9 @@ from collections.abc import AsyncIterator
 from typing import Literal
 
 from app.llm.exceptions import LLMError
+from app.llm.agent_protocol import (
+    ToolContentContract,
+)
 from app.llm.models import (
     LLMMessage,
     LLMResult,
@@ -24,7 +27,7 @@ class FakeLLMClient:
         stream_error: LLMError | None = None,
         tool_decision: LLMToolDecision | None = None,
         tool_decisions: list[
-            LLMToolDecision
+            LLMToolDecision | LLMError
         ] | None = None,
     ) -> None:
         if (
@@ -53,6 +56,9 @@ class FakeLLMClient:
         ] = []
         self.tool_choices: list[
             Literal["auto", "none"]
+        ] = []
+        self.content_contracts: list[
+            ToolContentContract
         ] = []
 
     def validate_configuration(self) -> None:
@@ -123,6 +129,7 @@ class FakeLLMClient:
         messages: list[LLMMessage],
         tools: list[LLMToolDefinition],
         tool_choice: Literal["auto", "none"] = "auto",
+        content_contract: ToolContentContract = "plain_text",
     ) -> LLMToolDecision:
         if self._config_error is not None:
             raise self._config_error
@@ -134,6 +141,9 @@ class FakeLLMClient:
             )
         )
         self.tool_choices.append(tool_choice)
+        self.content_contracts.append(
+            content_contract
+        )
 
         if self._tool_decisions is not None:
             if not self._tool_decisions:
@@ -141,7 +151,12 @@ class FakeLLMClient:
                     "no fake tool decisions remain"
                 )
 
-            return self._tool_decisions.pop(0)
+            result = self._tool_decisions.pop(0)
+
+            if isinstance(result, LLMError):
+                raise result
+
+            return result
 
         if self._tool_decision is None:
             raise AssertionError(

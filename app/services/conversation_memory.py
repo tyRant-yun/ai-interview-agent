@@ -13,6 +13,9 @@ from app.domain.conversation_manager import (
     ConversationManager,
 )
 from app.llm.client import LLMClient
+from app.llm.agent_protocol import (
+    contains_dsml_control_marker,
+)
 from app.llm.exceptions import LLMError
 from app.llm.models import (
     LLMMessage,
@@ -112,12 +115,53 @@ class ConversationMemoryService:
             ),
         )
 
+        filtered_messages = []
+
+        for message in messages:
+            if (
+                message.role.value == "assistant"
+                and contains_dsml_control_marker(
+                    message.content
+                )
+            ):
+                if (
+                    filtered_messages
+                    and filtered_messages[-1]
+                    .role.value == "user"
+                ):
+                    filtered_messages.pop()
+
+                logger.warning(
+                    "conversation_history_quarantined "
+                    "conversation_id=%d message_id=%d",
+                    conversation_id,
+                    message.id,
+                )
+                continue
+
+            filtered_messages.append(message)
+
+        summary = conversation.summary
+
+        if (
+            summary is not None
+            and contains_dsml_control_marker(summary)
+        ):
+            logger.warning(
+                "conversation_summary_quarantined "
+                "conversation_id=%d",
+                conversation_id,
+            )
+            summary = None
+
         selected_messages = []
         used_characters = len(
-            conversation.summary or ""
+            summary or ""
         )
 
-        for message in reversed(messages):
+        for message in reversed(
+            filtered_messages
+        ):
             message_size = len(
                 message.content
             )
@@ -138,7 +182,7 @@ class ConversationMemoryService:
         selected_messages.reverse()
 
         return ConversationMemoryContext(
-            summary=conversation.summary,
+            summary=summary,
             messages=tuple(
                 LLMMessage(
                     role=message.role.value,
@@ -152,7 +196,7 @@ class ConversationMemoryService:
             ),
             context_truncated=(
                 len(selected_messages)
-                < len(messages)
+                < len(filtered_messages)
             ),
         )
 
@@ -192,6 +236,27 @@ class ConversationMemoryService:
                 .summarized_through_message_id
             ),
         )
+
+        filtered_messages = []
+
+        for message in messages:
+            if (
+                message.role.value == "assistant"
+                and contains_dsml_control_marker(
+                    message.content
+                )
+            ):
+                if (
+                    filtered_messages
+                    and filtered_messages[-1]
+                    .role.value == "user"
+                ):
+                    filtered_messages.pop()
+                continue
+
+            filtered_messages.append(message)
+
+        messages = filtered_messages
 
         total_characters = sum(
             len(message.content)
@@ -236,12 +301,22 @@ class ConversationMemoryService:
             )
 
         try:
+            existing_summary = conversation.summary
+
+            if (
+                existing_summary is not None
+                and contains_dsml_control_marker(
+                    existing_summary
+                )
+            ):
+                existing_summary = None
+
             llm_result = (
                 self._llm_client.generate_json(
                     messages=(
                         build_conversation_summary_messages(
                             existing_summary=(
-                                conversation.summary
+                                existing_summary
                             ),
                             messages=(
                                 messages_to_summarize

@@ -11,8 +11,12 @@ from app.agent.models import (
     AgentStep,
 )
 from app.llm.client import LLMClient
+from app.llm.agent_protocol import (
+    contains_dsml_control_marker,
+)
 from app.llm.exceptions import (
     LLMInvalidResponseError,
+    LLMToolDecisionProtocolError,
 )
 from app.llm.models import (
     LLMMessage,
@@ -20,6 +24,7 @@ from app.llm.models import (
     LLMUsage,
 )
 from app.prompts.agent import (
+    build_agent_protocol_correction_message,
     build_agent_messages,
 )
 from app.tools.exceptions import (
@@ -141,6 +146,7 @@ class AgentRunner:
 
         steps: list[AgentStep] = []
         seen_tool_calls: set[str] = set()
+        correction_used = False
 
         total_usage = LLMUsage()
         last_model = "unknown"
@@ -160,50 +166,155 @@ class AgentRunner:
                 else "auto"
             )
 
-            decision = self._llm_client.choose_tools(
-                messages=messages,
-                tools=definitions,
-                tool_choice=tool_choice,
-            )
+            while True:
+                try:
+                    decision = (
+                        self._llm_client.choose_tools(
+                            messages=messages,
+                            tools=definitions,
+                            tool_choice=tool_choice,
+                            content_contract=(
+                                "final_answer_envelope"
+                            ),
+                        )
+                    )
+                except (
+                    LLMToolDecisionProtocolError
+                ):
+                    if correction_used:
+                        raise
 
-            last_model = decision.model
+                    correction_used = True
+                    messages.append(
+                        build_agent_protocol_correction_message(
+                            violation=(
+                                "it did not match the "
+                                "required Agent response "
+                                "protocol"
+                            )
+                        )
+                    )
+                    logger.warning(
+                        "agent_protocol_correction "
+                        "step=%d reason=invalid_response",
+                        step_number,
+                    )
+                    continue
 
-            total_usage = _add_usage(
-                total_usage,
-                decision.usage,
-            )
+                last_model = decision.model
 
-            selected_tool = None
-
-            if len(decision.tool_calls) == 1:
-                selected_tool = (
-                    decision.tool_calls[0].name
+                total_usage = _add_usage(
+                    total_usage,
+                    decision.usage,
                 )
-            elif len(decision.tool_calls) > 1:
-                selected_tool = "multiple"
 
-            logger.info(
-                "agent_model_turn step=%d "
-                "tool_choice=%s selected_tool=%s "
-                "model=%s duration_ms=%d "
-                "prompt_tokens=%d "
-                "completion_tokens=%d "
-                "total_tokens=%d",
-                step_number,
-                tool_choice,
-                selected_tool,
-                decision.model,
-                decision.duration_ms,
-                decision.usage.prompt_tokens,
-                decision.usage.completion_tokens,
-                decision.usage.total_tokens,
-            )
+                selected_tool = None
 
-            if len(decision.tool_calls) > 1:
-                raise ToolSelectionError(
-                    "the Agent supports at most "
-                    "one tool call per step"
+                if len(decision.tool_calls) == 1:
+                    selected_tool = (
+                        decision.tool_calls[0].name
+                    )
+                elif len(decision.tool_calls) > 1:
+                    selected_tool = "multiple"
+
+                logger.info(
+                    "agent_model_turn step=%d "
+                    "tool_choice=%s selected_tool=%s "
+                    "model=%s duration_ms=%d "
+                    "prompt_tokens=%d "
+                    "completion_tokens=%d "
+                    "total_tokens=%d",
+                    step_number,
+                    tool_choice,
+                    selected_tool,
+                    decision.model,
+                    decision.duration_ms,
+                    decision.usage.prompt_tokens,
+                    decision.usage.completion_tokens,
+                    decision.usage.total_tokens,
                 )
+
+                if (
+                    decision.tool_calls
+                    and decision.content is not None
+                ):
+                    if correction_used:
+                        raise LLMInvalidResponseError(
+                            "the Agent returned content "
+                            "together with tool calls"
+                        )
+
+                    correction_used = True
+                    messages.append(
+                        build_agent_protocol_correction_message(
+                            violation=(
+                                "it mixed ordinary content "
+                                "with native tool calls"
+                            )
+                        )
+                    )
+                    logger.warning(
+                        "agent_protocol_correction "
+                        "step=%d reason=mixed_content",
+                        step_number,
+                    )
+                    continue
+
+                if len(decision.tool_calls) > 1:
+                    if correction_used:
+                        raise ToolSelectionError(
+                            "the Agent supports at most "
+                            "one tool call per step"
+                        )
+
+                    correction_used = True
+                    messages.append(
+                        build_agent_protocol_correction_message(
+                            violation=(
+                                "it returned more than one "
+                                "native tool call"
+                            )
+                        )
+                    )
+                    logger.warning(
+                        "agent_protocol_correction "
+                        "step=%d reason=multiple_tools",
+                        step_number,
+                    )
+                    continue
+
+                if (
+                    not decision.tool_calls
+                    and decision.content is not None
+                    and contains_dsml_control_marker(
+                        decision.content
+                    )
+                ):
+                    if correction_used:
+                        raise LLMInvalidResponseError(
+                            "the Agent final answer "
+                            "contained a reserved tool "
+                            "control marker"
+                        )
+
+                    correction_used = True
+                    messages.append(
+                        build_agent_protocol_correction_message(
+                            violation=(
+                                "its answer contained a "
+                                "reserved tool-control "
+                                "marker"
+                            )
+                        )
+                    )
+                    logger.warning(
+                        "agent_protocol_correction "
+                        "step=%d reason=control_marker",
+                        step_number,
+                    )
+                    continue
+
+                break
 
             if (
                 is_final_turn

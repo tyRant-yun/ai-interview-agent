@@ -28,7 +28,30 @@ Rules:
 11. Do not reveal hidden chain-of-thought or private
     reasoning. Return only the useful final answer.
 12. Keep the final answer practical and concise.
+13. When you do not call a tool, return exactly one JSON
+    object with this shape:
+    {"answer": "your useful final answer"}
+14. Never write tool calls, DSML, or other tool-control
+    syntax inside the answer field.
 """.strip()
+
+
+def build_agent_protocol_correction_message(
+    *,
+    violation: str,
+) -> LLMMessage:
+    """Build one backend-owned protocol correction."""
+
+    return LLMMessage(
+        role="system",
+        content=(
+            "Your previous response was rejected because "
+            f"{violation}. Do not repeat or quote that "
+            "response. Return either exactly one native "
+            "tool call, or no tool calls and exactly one "
+            'JSON object shaped as {"answer":"..."}.'
+        ),
+    )
 
 
 def build_agent_messages(

@@ -16,3 +16,9 @@ class LLMUpstreamError(LLMError):
 
 class LLMInvalidResponseError(LLMError):
     """Raised when the model response cannot satisfy our contract."""
+
+
+class LLMToolDecisionProtocolError(
+    LLMInvalidResponseError
+):
+    """A correctable tool-decision protocol violation."""
