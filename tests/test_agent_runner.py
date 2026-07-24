@@ -653,6 +653,40 @@ def test_adapter_protocol_error_is_corrected_once():
     assert len(fake.tool_requests) == 2
 
 
+def test_protocol_violation_logging_is_safe(
+    caplog,
+):
+    private_content = "private-model-output"
+    fake = FakeLLMClient(
+        "{}",
+        tool_decisions=[
+            LLMToolDecisionProtocolError(
+                private_content,
+                violation="invalid_envelope_json",
+            ),
+            final_decision("Recovered."),
+        ],
+    )
+
+    with caplog.at_level(
+        "WARNING",
+        logger="uvicorn.error.agent",
+    ):
+        AgentRunner(
+            llm_client=fake,
+            registry=build_registry(),
+        ).run(
+            user_request="Recover safely.",
+            max_steps=2,
+        )
+
+    assert (
+        "violation=invalid_envelope_json"
+        in caplog.text
+    )
+    assert private_content not in caplog.text
+
+
 def test_parsed_dsml_answer_is_never_returned():
     executions = []
 

@@ -22,3 +22,12 @@ class LLMToolDecisionProtocolError(
     LLMInvalidResponseError
 ):
     """A correctable tool-decision protocol violation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        violation: str = "invalid_response",
+    ) -> None:
+        super().__init__(message)
+        self.violation = violation

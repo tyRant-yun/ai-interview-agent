@@ -105,22 +105,38 @@ def test_agent_contract_parses_envelope_and_sends_parallel_false():
     assert requests[0][
         "parallel_tool_calls"
     ] is False
+    assert requests[0]["response_format"] == {
+        "type": "json_object",
+    }
 
 
 @pytest.mark.parametrize(
-    "content",
+    ("content", "expected_violation"),
     [
-        "plain final answer",
         (
-            "<｜｜DSML｜｜tool_calls>"
-            '<｜｜DSML｜｜invoke name="get_note">'
+            "plain final answer",
+            "invalid_envelope_json",
         ),
-        '{"wrong":"field"}',
-        '{"answer":"","extra":true}',
+        (
+            (
+                "<｜｜DSML｜｜tool_calls>"
+                '<｜｜DSML｜｜invoke name="get_note">'
+            ),
+            "invalid_envelope_json",
+        ),
+        (
+            '{"wrong":"field"}',
+            "invalid_envelope_schema",
+        ),
+        (
+            '{"answer":"","extra":true}',
+            "invalid_envelope_schema",
+        ),
     ],
 )
 def test_agent_contract_rejects_invalid_content(
     content,
+    expected_violation,
 ):
     client = build_client(
         lambda request: tool_response(
@@ -130,15 +146,27 @@ def test_agent_contract_rejects_invalid_content(
 
     with pytest.raises(
         LLMToolDecisionProtocolError
-    ):
+    ) as captured:
         choose(client)
+
+    assert captured.value.violation == (
+        expected_violation
+    )
 
 
 def test_plain_text_contract_remains_available_for_day8():
-    client = build_client(
-        lambda request: tool_response(
+    payloads = []
+
+    def handler(request: httpx.Request):
+        payloads.append(
+            json.loads(request.content)
+        )
+        return tool_response(
             content="A plain Day 8 answer."
         )
+
+    client = build_client(
+        handler
     )
 
     decision = choose(
@@ -149,6 +177,7 @@ def test_plain_text_contract_remains_available_for_day8():
     assert decision.content == (
         "A plain Day 8 answer."
     )
+    assert "response_format" not in payloads[0]
 
 
 def test_native_tool_calls_are_preserved_without_truncation():
@@ -282,6 +311,91 @@ def test_parallel_parameter_unsupported_retries_once():
     assert "parallel_tool_calls" not in (
         payloads[1]
     )
+
+
+def test_response_format_unsupported_retries_once():
+    payloads = []
+
+    def handler(request: httpx.Request):
+        payloads.append(
+            json.loads(request.content)
+        )
+
+        if len(payloads) == 1:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": (
+                            "unsupported parameter: "
+                            "response_format"
+                        )
+                    }
+                },
+            )
+
+        return tool_response(
+            content='{"answer":"Done."}'
+        )
+
+    decision = choose(build_client(handler))
+
+    assert decision.content == "Done."
+    assert len(payloads) == 2
+    assert payloads[0]["response_format"] == {
+        "type": "json_object",
+    }
+    assert "response_format" not in payloads[1]
+    assert payloads[1][
+        "parallel_tool_calls"
+    ] is False
+
+
+def test_optional_parameters_can_fallback_sequentially():
+    payloads = []
+
+    def handler(request: httpx.Request):
+        payload = json.loads(request.content)
+        payloads.append(payload)
+
+        if "parallel_tool_calls" in payload:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": (
+                            "parallel_tool_calls is "
+                            "not allowed"
+                        )
+                    }
+                },
+            )
+
+        if "response_format" in payload:
+            return httpx.Response(
+                422,
+                json={
+                    "error": {
+                        "message": (
+                            "response_format is "
+                            "unsupported"
+                        )
+                    }
+                },
+            )
+
+        return tool_response(
+            content='{"answer":"Done."}'
+        )
+
+    decision = choose(build_client(handler))
+
+    assert decision.content == "Done."
+    assert len(payloads) == 3
+    assert "parallel_tool_calls" in payloads[0]
+    assert "parallel_tool_calls" not in payloads[1]
+    assert "response_format" in payloads[1]
+    assert "response_format" not in payloads[2]
 
 
 def test_unrelated_bad_request_does_not_retry():
