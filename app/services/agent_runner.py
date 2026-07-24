@@ -1,0 +1,363 @@
+import json
+import logging
+from time import perf_counter
+
+from app.agent.exceptions import (
+    AgentMaxStepsExceededError,
+    AgentRepeatedToolCallError,
+)
+from app.agent.models import (
+    AgentRunResult,
+    AgentStep,
+)
+from app.llm.client import LLMClient
+from app.llm.exceptions import (
+    LLMInvalidResponseError,
+)
+from app.llm.models import (
+    LLMMessage,
+    LLMToolCall,
+    LLMUsage,
+)
+from app.prompts.agent import (
+    build_agent_messages,
+)
+from app.tools.exceptions import (
+    ToolSelectionError,
+)
+from app.tools.models import (
+    ToolExecutionOutcome,
+)
+from app.tools.registry import ToolRegistry
+
+
+MAX_AGENT_STEPS = 6
+logger = logging.getLogger(
+    "uvicorn.error.agent"
+)
+
+
+def _add_usage(
+    current: LLMUsage,
+    additional: LLMUsage,
+) -> LLMUsage:
+    return LLMUsage(
+        prompt_tokens=(
+            current.prompt_tokens
+            + additional.prompt_tokens
+        ),
+        completion_tokens=(
+            current.completion_tokens
+            + additional.completion_tokens
+        ),
+        total_tokens=(
+            current.total_tokens
+            + additional.total_tokens
+        ),
+    )
+
+
+def _tool_call_signature(
+    tool_call: LLMToolCall,
+) -> str:
+    """Build a stable signature for loop detection."""
+
+    try:
+        arguments = json.loads(
+            tool_call.arguments_json
+        )
+
+        normalized_arguments = json.dumps(
+            arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    except json.JSONDecodeError:
+        normalized_arguments = (
+            tool_call.arguments_json.strip()
+        )
+
+    return (
+        f"{tool_call.name}:"
+        f"{normalized_arguments}"
+    )
+
+
+def _serialize_tool_result(
+    result: ToolExecutionOutcome,
+) -> str:
+    return json.dumps(
+        {
+            "success": result.success,
+            "output": result.output,
+            "error": result.error,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+class AgentRunner:
+    """Run a bounded tool-using model loop."""
+
+    def __init__(
+        self,
+        *,
+        llm_client: LLMClient,
+        registry: ToolRegistry,
+    ) -> None:
+        self._llm_client = llm_client
+        self._registry = registry
+
+    def run(
+        self,
+        *,
+        user_request: str,
+        max_steps: int,
+    ) -> AgentRunResult:
+        if not 1 <= max_steps <= MAX_AGENT_STEPS:
+            raise ValueError(
+                "max_steps must be between "
+                f"1 and {MAX_AGENT_STEPS}"
+            )
+
+        self._llm_client.validate_configuration()
+
+        messages = build_agent_messages(
+            user_request=user_request
+        )
+
+        definitions = self._registry.definitions()
+
+        steps: list[AgentStep] = []
+        seen_tool_calls: set[str] = set()
+
+        total_usage = LLMUsage()
+        last_model = "unknown"
+
+        started_at = perf_counter()
+
+        for step_number in range(
+            1,
+            max_steps + 1,
+        ):
+            is_final_turn = (
+                step_number == max_steps
+            )
+            tool_choice = (
+                "none"
+                if is_final_turn
+                else "auto"
+            )
+
+            decision = self._llm_client.choose_tools(
+                messages=messages,
+                tools=definitions,
+                tool_choice=tool_choice,
+            )
+
+            last_model = decision.model
+
+            total_usage = _add_usage(
+                total_usage,
+                decision.usage,
+            )
+
+            selected_tool = None
+
+            if len(decision.tool_calls) == 1:
+                selected_tool = (
+                    decision.tool_calls[0].name
+                )
+            elif len(decision.tool_calls) > 1:
+                selected_tool = "multiple"
+
+            logger.info(
+                "agent_model_turn step=%d "
+                "tool_choice=%s selected_tool=%s "
+                "model=%s duration_ms=%d "
+                "prompt_tokens=%d "
+                "completion_tokens=%d "
+                "total_tokens=%d",
+                step_number,
+                tool_choice,
+                selected_tool,
+                decision.model,
+                decision.duration_ms,
+                decision.usage.prompt_tokens,
+                decision.usage.completion_tokens,
+                decision.usage.total_tokens,
+            )
+
+            if len(decision.tool_calls) > 1:
+                raise ToolSelectionError(
+                    "the Agent supports at most "
+                    "one tool call per step"
+                )
+
+            if (
+                is_final_turn
+                and decision.tool_calls
+            ):
+                logger.warning(
+                    "agent_terminated reason="
+                    "tool_call_on_final_turn "
+                    "step=%d selected_tool=%s",
+                    step_number,
+                    selected_tool,
+                )
+
+                raise LLMInvalidResponseError(
+                    "the Agent attempted a tool call "
+                    "during the final-answer-only turn"
+                )
+
+            # No tool means the model has completed.
+            if not decision.tool_calls:
+                if decision.content is None:
+                    logger.warning(
+                        "agent_terminated reason="
+                        "empty_final_response step=%d",
+                        step_number,
+                    )
+
+                    raise LLMInvalidResponseError(
+                        "the Agent returned neither "
+                        "a tool call nor a final answer"
+                    )
+
+                steps.append(
+                    AgentStep(
+                        step_number=step_number,
+                        assistant_text=(
+                            decision.content
+                        ),
+                        tool_call=None,
+                        tool_result=None,
+                        model=decision.model,
+                        usage=decision.usage,
+                        duration_ms=(
+                            decision.duration_ms
+                        ),
+                    )
+                )
+
+                total_duration_ms = int(
+                    (
+                        perf_counter()
+                        - started_at
+                    )
+                    * 1000
+                )
+
+                logger.info(
+                    "agent_terminated reason="
+                    "final_answer step=%d "
+                    "duration_ms=%d total_tokens=%d",
+                    step_number,
+                    total_duration_ms,
+                    total_usage.total_tokens,
+                )
+
+                return AgentRunResult(
+                    final_answer=decision.content,
+                    steps=tuple(steps),
+                    model=last_model,
+                    usage=total_usage,
+                    duration_ms=(
+                        total_duration_ms
+                    ),
+                )
+
+            tool_call = decision.tool_calls[0]
+
+            signature = _tool_call_signature(
+                tool_call
+            )
+
+            if signature in seen_tool_calls:
+                logger.warning(
+                    "agent_terminated reason="
+                    "repeated_tool_call step=%d "
+                    "selected_tool=%s",
+                    step_number,
+                    tool_call.name,
+                )
+
+                raise AgentRepeatedToolCallError(
+                    "the Agent repeated the same "
+                    f"tool call: {tool_call.name}"
+                )
+
+            seen_tool_calls.add(signature)
+
+            tool_result = self._registry.execute(
+                tool_call
+            )
+
+            logger.info(
+                "agent_tool_result step=%d tool=%s "
+                "argument_keys=%s success=%s",
+                step_number,
+                tool_call.name,
+                ",".join(
+                    sorted(
+                        str(key)
+                        for key
+                        in tool_result.arguments
+                    )
+                ),
+                tool_result.success,
+            )
+
+            steps.append(
+                AgentStep(
+                    step_number=step_number,
+                    assistant_text=(
+                        decision.content
+                    ),
+                    tool_call=tool_call,
+                    tool_result=tool_result,
+                    model=decision.model,
+                    usage=decision.usage,
+                    duration_ms=(
+                        decision.duration_ms
+                    ),
+                )
+            )
+
+            # Reconstruct the assistant tool-call message.
+            messages.append(
+                LLMMessage(
+                    role="assistant",
+                    content=decision.content,
+                    tool_calls=(tool_call,),
+                )
+            )
+
+            # Return the actual tool result to the model.
+            messages.append(
+                LLMMessage(
+                    role="tool",
+                    content=(
+                        _serialize_tool_result(
+                            tool_result
+                        )
+                    ),
+                    tool_call_id=tool_call.id,
+                )
+            )
+
+        logger.warning(
+            "agent_terminated reason=max_steps "
+            "steps_completed=%d",
+            max_steps,
+        )
+
+        raise AgentMaxStepsExceededError(
+            "the Agent reached the maximum "
+            f"of {max_steps} steps without "
+            "producing a final answer"
+        )

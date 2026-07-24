@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from typing import Literal
 
 from app.llm.exceptions import LLMError
 from app.llm.models import (
@@ -22,12 +23,37 @@ class FakeLLMClient:
         generate_error: LLMError | None = None,
         stream_error: LLMError | None = None,
         tool_decision: LLMToolDecision | None = None,
+        tool_decisions: list[
+            LLMToolDecision
+        ] | None = None,
     ) -> None:
+        if (
+            tool_decision is not None
+            and tool_decisions is not None
+        ):
+            raise ValueError(
+                "configure tool_decision or "
+                "tool_decisions, not both"
+            )
         self._content = content
         self._config_error = config_error
         self._generate_error = generate_error
         self._stream_error = stream_error
         self._tool_decision = tool_decision
+        self._tool_decisions = (
+            list(tool_decisions)
+            if tool_decisions is not None
+            else None
+        )
+        self.tool_requests: list[
+            tuple[
+                tuple[LLMMessage, ...],
+                tuple[LLMToolDefinition, ...],
+            ]
+        ] = []
+        self.tool_choices: list[
+            Literal["auto", "none"]
+        ] = []
 
     def validate_configuration(self) -> None:
         if self._config_error is not None:
@@ -96,13 +122,30 @@ class FakeLLMClient:
         *,
         messages: list[LLMMessage],
         tools: list[LLMToolDefinition],
+        tool_choice: Literal["auto", "none"] = "auto",
     ) -> LLMToolDecision:
         if self._config_error is not None:
             raise self._config_error
 
+        self.tool_requests.append(
+            (
+                tuple(messages),
+                tuple(tools),
+            )
+        )
+        self.tool_choices.append(tool_choice)
+
+        if self._tool_decisions is not None:
+            if not self._tool_decisions:
+                raise AssertionError(
+                    "no fake tool decisions remain"
+                )
+
+            return self._tool_decisions.pop(0)
+
         if self._tool_decision is None:
             raise AssertionError(
-                "tool_decision must be configured "
+                "tool decision must be configured "
                 "before choose_tools is called"
             )
 

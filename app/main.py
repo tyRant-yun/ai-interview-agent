@@ -18,7 +18,10 @@ from app.llm.exceptions import (
     LLMUpstreamError,
 )
 from app.tools.exceptions import ToolProtocolError
-
+from app.agent.exceptions import (
+    AgentExecutionError,
+)
+from app.api.agent import router as agent_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -33,7 +36,7 @@ app = FastAPI(
         "notes and generating structured streaming "
         "interview questions."
     ),
-    version="0.4.0",
+    version="0.6.0",
     lifespan=lifespan,
 )
 
@@ -73,6 +76,18 @@ async def handle_duplicate_note(
         },
     )
 
+@app.exception_handler(AgentExecutionError)
+async def handle_agent_execution_error(
+    request: Request,
+    error: AgentExecutionError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={
+            "error": error.error_code,
+            "detail": str(error),
+        },
+    )
 
 @app.exception_handler(LLMNotConfiguredError)
 async def handle_llm_not_configured(
@@ -147,3 +162,4 @@ async def handle_tool_protocol_error(
 app.include_router(notes_router)
 app.include_router(interview_router)
 app.include_router(tools_router)
+app.include_router(agent_router)

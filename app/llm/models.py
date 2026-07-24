@@ -1,13 +1,64 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 @dataclass(frozen=True, slots=True)
 class LLMMessage:
-    """One message sent to a chat-completion model."""
+    """One normalized chat-completion message."""
 
-    role: Literal["system", "user", "assistant"]
-    content: str
+    role: Literal[
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+
+    content: str | None
+
+    tool_calls: tuple[
+        LLMToolCall,
+        ...
+    ] = ()
+
+    tool_call_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.role == "tool"
+            and not self.tool_call_id
+        ):
+            raise ValueError(
+                "tool messages require "
+                "tool_call_id"
+            )
+
+        if (
+            self.role != "tool"
+            and self.tool_call_id is not None
+        ):
+            raise ValueError(
+                "only tool messages may set "
+                "tool_call_id"
+            )
+
+        if (
+            self.tool_calls
+            and self.role != "assistant"
+        ):
+            raise ValueError(
+                "only assistant messages may "
+                "contain tool_calls"
+            )
+
+        if (
+            self.role in {"system", "user"}
+            and self.content is None
+        ):
+            raise ValueError(
+                "system and user messages "
+                "require content"
+            )
 
 
 @dataclass(frozen=True, slots=True)
