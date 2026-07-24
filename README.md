@@ -27,10 +27,19 @@ Day 1：项目立项与范围冻结。
 5. 不写入无法解释的简历内容。
 
 ## 当前阶段
-Day 8：Native Tool Calling 与 Tool Registry。
+## 当前阶段
+
+Day 9：受控 Agent Runner。
 
 已完成：
 
+- Native Tool Calling
+- Tool Registry 与参数验证
+- 多轮工具调用循环
+- 工具结果回传模型
+- 最大执行步数
+- 重复工具调用保护
+- Agent 执行步骤记录
 - FastAPI REST API
 - Pydantic 输入输出校验
 - SQLite 持久化
