@@ -180,8 +180,15 @@ class AgentRunner:
                     )
                 except (
                     LLMToolDecisionProtocolError
-                ):
+                ) as error:
                     if correction_used:
+                        logger.warning(
+                            "agent_terminated reason="
+                            "invalid_response "
+                            "step=%d violation=%s",
+                            step_number,
+                            error.violation,
+                        )
                         raise
 
                     correction_used = True
@@ -196,8 +203,10 @@ class AgentRunner:
                     )
                     logger.warning(
                         "agent_protocol_correction "
-                        "step=%d reason=invalid_response",
+                        "step=%d reason=invalid_response "
+                        "violation=%s",
                         step_number,
+                        error.violation,
                     )
                     continue
 

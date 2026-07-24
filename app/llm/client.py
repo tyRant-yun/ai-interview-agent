@@ -62,15 +62,17 @@ def _serialize_message(
     return payload
 
 
-def _parallel_tool_calls_unsupported(
+def _request_parameter_unsupported(
     response: httpx.Response,
+    *,
+    parameter: str,
 ) -> bool:
     if response.status_code not in {400, 422}:
         return False
 
     body = response.text.lower()
 
-    if "parallel_tool_calls" not in body:
+    if parameter.lower() not in body:
         return False
 
     return any(
@@ -295,6 +297,13 @@ class OpenAICompatibleLLMClient:
             "temperature": 0.0,
         }
 
+        if content_contract == (
+            "final_answer_envelope"
+        ):
+            payload["response_format"] = {
+                "type": "json_object",
+            }
+
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -307,24 +316,40 @@ class OpenAICompatibleLLMClient:
                 timeout=self._timeout_seconds,
                 transport=self._http_transport,
             ) as client:
-                response = client.post(
-                    endpoint,
-                    headers=headers,
-                    json=payload,
-                )
+                request_payload = dict(payload)
 
-                if _parallel_tool_calls_unsupported(
-                    response
-                ):
-                    fallback_payload = dict(payload)
-                    fallback_payload.pop(
-                        "parallel_tool_calls"
-                    )
-
+                for _ in range(3):
                     response = client.post(
                         endpoint,
                         headers=headers,
-                        json=fallback_payload,
+                        json=request_payload,
+                    )
+
+                    unsupported_parameter = next(
+                        (
+                            parameter
+                            for parameter in (
+                                "parallel_tool_calls",
+                                "response_format",
+                            )
+                            if parameter
+                            in request_payload
+                            and _request_parameter_unsupported(
+                                response,
+                                parameter=parameter,
+                            )
+                        ),
+                        None,
+                    )
+
+                    if unsupported_parameter is None:
+                        break
+
+                    request_payload = dict(
+                        request_payload
+                    )
+                    request_payload.pop(
+                        unsupported_parameter
                     )
 
                 response.raise_for_status()
@@ -356,29 +381,51 @@ class OpenAICompatibleLLMClient:
             data = response.json()
             message = data["choices"][0]["message"]
 
-            raw_content = message.get("content")
-
-            if raw_content is not None:
-                if not isinstance(raw_content, str):
-                    raise TypeError(
-                        "assistant content is not a string"
-                    )
-
-                content = raw_content.strip() or None
-            else:
-                content = None
-
-            raw_tool_calls = message.get(
-                "tool_calls"
-            ) or []
-
-            if not isinstance(raw_tool_calls, list):
+            if not isinstance(message, dict):
                 raise TypeError(
-                    "tool_calls is not a list"
+                    "assistant message is not an object"
                 )
 
-            tool_calls: list[LLMToolCall] = []
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise LLMToolDecisionProtocolError(
+                "the model returned an invalid "
+                "tool-selection response",
+                violation="invalid_message_shape",
+            ) from error
 
+        raw_content = message.get("content")
+
+        if raw_content is not None:
+            if not isinstance(raw_content, str):
+                raise LLMToolDecisionProtocolError(
+                    "the model returned an invalid "
+                    "tool-selection response",
+                    violation="invalid_content_type",
+                )
+
+            content = raw_content.strip() or None
+        else:
+            content = None
+
+        raw_tool_calls = message.get(
+            "tool_calls"
+        ) or []
+
+        if not isinstance(raw_tool_calls, list):
+            raise LLMToolDecisionProtocolError(
+                "the model returned an invalid "
+                "tool-selection response",
+                violation="invalid_tool_calls_type",
+            )
+
+        tool_calls: list[LLMToolCall] = []
+
+        try:
             for raw_call in raw_tool_calls:
                 if not isinstance(raw_call, dict):
                     raise TypeError(
@@ -432,43 +479,65 @@ class OpenAICompatibleLLMClient:
                     )
                 )
 
-            if tool_calls:
-                if content is not None:
-                    raise ValueError(
-                        "assistant returned content "
-                        "together with tool calls"
-                    )
-            elif content_contract == (
-                "final_answer_envelope"
-            ):
-                if content is None:
-                    raise ValueError(
-                        "assistant returned no final "
-                        "answer envelope"
-                    )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise LLMToolDecisionProtocolError(
+                "the model returned an invalid "
+                "tool-selection response",
+                violation="invalid_native_tool_shape",
+            ) from error
 
+        if tool_calls:
+            if content is not None:
+                raise LLMToolDecisionProtocolError(
+                    "the model returned an invalid "
+                    "tool-selection response",
+                    violation=(
+                        "mixed_content_and_tool_calls"
+                    ),
+                )
+        elif content_contract == (
+            "final_answer_envelope"
+        ):
+            if content is None:
+                raise LLMToolDecisionProtocolError(
+                    "the model returned an invalid "
+                    "tool-selection response",
+                    violation="missing_final_content",
+                )
+
+            try:
                 envelope = (
                     FinalAnswerEnvelope
                     .model_validate_json(content)
                 )
-                content = envelope.answer
-            elif content is None:
-                raise ValueError(
-                    "assistant returned neither content "
-                    "nor tool calls"
+            except ValidationError as error:
+                error_types = {
+                    item["type"]
+                    for item in error.errors()
+                }
+                violation = (
+                    "invalid_envelope_json"
+                    if "json_invalid" in error_types
+                    else "invalid_envelope_schema"
                 )
 
-        except (
-            KeyError,
-            IndexError,
-            TypeError,
-            ValueError,
-            ValidationError,
-        ) as error:
+                raise LLMToolDecisionProtocolError(
+                    "the model returned an invalid "
+                    "tool-selection response",
+                    violation=violation,
+                ) from error
+
+            content = envelope.answer
+        elif content is None:
             raise LLMToolDecisionProtocolError(
                 "the model returned an invalid "
-                "tool-selection response"
-            ) from error
+                "tool-selection response",
+                violation="missing_final_content",
+            )
 
         usage_data = data.get("usage") or {}
 
